@@ -128,6 +128,10 @@ class OSCMIDIApp:
         self.content_visible = False   # MIDI/Log
         self.alarm_frame_visible = False  # Alarm
 
+        # Server connection transport and protocol
+        self.server_transport = None
+        self.server_protocol = None
+
         # Load icon (optional)
         self.load_icon()
 
@@ -164,11 +168,11 @@ class OSCMIDIApp:
                 self.saved_out_ip = config.get("osc_out_ip", self.get_local_ip())
                 self.saved_out_port = config.get("osc_out_port", "3330")
         else:
-            self.saved_port = "3330"
+            self.saved_port = "5550"
             self.saved_midi_port = ""
             self.saved_midi_out_port = ""
             self.saved_out_ip = self.get_local_ip()
-            self.saved_out_port = "5550"
+            self.saved_out_port = "3330"
 
     def save_config(self):
         config = {
@@ -183,6 +187,15 @@ class OSCMIDIApp:
 
     def setup_ui(self):
         self.master.geometry("290x230")  # Start small
+
+        # ------------- Menu Bar ------------- #
+        menu_bar = tk.Menu(self.master)
+        self.master.config(menu=menu_bar)
+
+        # Add Help Menu
+        help_menu = tk.Menu(menu_bar, tearoff=0)
+        menu_bar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="OSC Commands", command=self.show_help)
 
         # ------------- Settings Frame (top area) ------------- #
         settings_frame = ttk.Frame(self.master)
@@ -226,12 +239,28 @@ class OSCMIDIApp:
         self.output_port_entry.grid(row=5, column=1, sticky=tk.EW)
         Tooltip(self.output_port_entry, "Destination port for OSC messages.")
 
+        # NEW: Shared Socket ID (1-4)
+        ttk.Label(settings_frame, text="Shared Socket ID:").grid(row=6, column=0, sticky=tk.W)
+        self.shared_socket_combo = ttk.Combobox(settings_frame, values=["1", "2", "3", "4"], width=5)
+        self.shared_socket_combo.current(0)  # Default to "1"
+        self.shared_socket_combo.grid(row=6, column=1, sticky=tk.EW)
+        Tooltip(self.shared_socket_combo, "Pick 1-4 if you want multiple apps to share the same port.\nAll must set the same port & enable SO_REUSEPORT for it to work.")
+
         settings_frame.columnconfigure(1, weight=1)
 
-        # Start Server Button
-        self.start_button = ttk.Button(self.master, text="Start Server", command=self.start)
-        self.start_button.pack(pady=5)
+        # Start Server Button Frame
+        server_frame = ttk.Frame(self.master)
+        server_frame.pack(pady=5)
+
+        self.start_button = ttk.Button(server_frame, text="Start Server", command=self.start)
+        self.start_button.pack(side=tk.LEFT, padx=5)
         Tooltip(self.start_button, "Start or stop the OSC server (MIDI optional).")
+
+        # Connection Indicator
+        self.connection_indicator = tk.Canvas(server_frame, width=20, height=20, bg='#2B2B2B', highlightthickness=0)
+        self.connection_indicator.pack(side=tk.LEFT, padx=5)
+        # Draw the circle, initial red
+        self.indicator = self.connection_indicator.create_oval(5, 5, 15, 15, fill='red')
 
         # ------ Frame for Burger Menus side-by-side ------
         burger_frame = ttk.Frame(self.master)
@@ -477,6 +506,82 @@ class OSCMIDIApp:
         self.remove_alarm_button = ttk.Button(self.alarm_frame, text="Remove Selected Alarm", command=self.remove_selected_alarm)
         self.remove_alarm_button.pack(pady=5)
 
+    # ------------------ Menu Handlers ------------------ #
+    def show_help(self):
+        help_window = tk.Toplevel(self.master)
+        help_window.title("Help - OSC Commands")
+        help_window.geometry("500x600")
+        help_window.resizable(False, False)
+
+        # Make it modal
+        help_window.transient(self.master)
+        help_window.grab_set()
+
+        # Create a Text widget to display commands
+        text = tk.Text(help_window, wrap='word', bg='#2B2B2B', fg='#FFFFFF', font=("Courier", 10))
+        text.pack(expand=True, fill='both', padx=10, pady=10)
+
+        # Insert the OSC commands
+        osc_commands = """
+------ Incoming OSC Addresses ------
+/pause
+    Pause playback.
+
+/play
+    Resume playback.
+
+/skip
+    Skip to next track.
+
+/back
+    Restart current track.
+
+/previous
+    Return to previous track.
+
+/bpm
+    Set BPM via OSC.
+
+/bpm1
+    Toggle ignoring BPM sync.
+
+/resetbpm
+    Reset BPM to song's default.
+
+/1 - /50
+    Load specific song by number by /X (X=1-50).
+
+------ Outgoing OSC Addresses ------
+/sync
+    Sent periodically with BPM value.
+
+/chXnote
+    Note on.
+
+/chXnvalue
+    Note velocity, range 0-127.
+
+/chXnoteoff
+    Note off.
+
+/chXnoffvalue
+    Note off velocity, range 0-127.
+
+/chXcc
+    Control Change number, range 0-127.
+
+/chXccvalue
+    Control Change value scaled, range 0-1.
+
+/chXpitch
+    Pitch wheel.
+
+/chXpressure
+    Aftertouch.
+"""
+        text.insert('1.0', osc_commands)
+        text.config(state='disabled')
+
     # ------------------ Burger Menus / Toggling  ------------------ #
     def toggle_midi_menu(self):
         """
@@ -550,13 +655,12 @@ class OSCMIDIApp:
             "triggered": False
         }
         self.alarms.append(alarm_entry)
-        display_text = f"{alarm_datetime} -> {address} {args}"
+        display_text = f"{alarm_datetime} -> {address} {' '.join(args)}"
         self.alarm_listbox.insert(tk.END, display_text)
 
         self.log_message(f"Scheduled alarm at {alarm_datetime}, address={address}, args={args}")
 
         # ---- Reload default fields right after scheduling ----
-        # i.e. date/currentTime+2Min, /clock, 1.0
         now = datetime.now()
         default_date_str = now.strftime("%Y-%m-%d")
         default_time_str = (now + timedelta(minutes=2)).strftime("%H:%M:%S")
@@ -629,7 +733,7 @@ class OSCMIDIApp:
 
         self.log_message("Outgoing OSC Addresses:")
         self.log_message("  /sync: Sent periodically with BPM value.")
-        self.log_message("  /chXnote, /chXnvalue, /chXnoteoff, /chXnoffvalue, /chXccY, /chXpitch, /chXpressure (X=1..16)")
+        self.log_message("  /chXnote, /chXnvalue, /chXnoteoff, /chXnoffvalue, /chXcc, /chXccvalue, /chXpitch, /chXpressure (X=1..16)")
         self.log_message("------------------------------")
 
     def toggle_sync(self):
@@ -798,6 +902,14 @@ class OSCMIDIApp:
             if self.sync_thread and self.sync_thread.is_alive():
                 self.sync_stop_event.set()
                 self.log_message("Sync BPM stopped.")
+
+            # Close OSC server
+            if self.server_transport:
+                self.server_transport.close()
+                self.server_transport = None
+                self.server_protocol = None
+                self.set_connection_status('red')
+                self.log_message("OSC Server stopped.")
         else:
             self.log_message("Stop command but nothing playing.")
 
@@ -902,6 +1014,13 @@ class OSCMIDIApp:
                 self.playing = False
                 self.info_label.config(text="Playback finished.")
                 self.log_message("Playback finished.")
+                # Close OSC server after playback finishes
+                if self.server_transport:
+                    self.server_transport.close()
+                    self.server_transport = None
+                    self.server_protocol = None
+                    self.set_connection_status('red')
+                    self.log_message("OSC Server stopped.")
         except Exception as e:
             self.playing = False
             self.log_message(f"Error: {e}")
@@ -970,6 +1089,7 @@ class OSCMIDIApp:
     def handle_midi_message(self, message, source='input'):
         """
         Forward relevant MIDI -> OSC.
+        Split Control Change messages into /chXcc and /chXccvalue.
         """
         if hasattr(message, 'channel'):
             ch = message.channel + 1
@@ -978,36 +1098,51 @@ class OSCMIDIApp:
                 velocity = message.velocity
                 if source == 'playback':
                     if message.type == 'note_on' and velocity > 0:
-                        self.osc_client.send_message(f"/ch{ch}note", note)
+                        if self.osc_client:
+                            self.osc_client.send_message(f"/ch{ch}note", note)
                         self.log_message(f"Playback -> /ch{ch}note {note}")
                     else:
                         self.log_message(f"Playback -> Skipping note_off: {note}")
                 else:
+                    if self.osc_client:
+                        if message.type == 'note_on' and velocity > 0:
+                            self.osc_client.send_message(f"/ch{ch}note", note)
+                            self.osc_client.send_message(f"/ch{ch}nvalue", velocity)
+                        else:
+                            self.osc_client.send_message(f"/ch{ch}noteoff", note)
+                            self.osc_client.send_message(f"/ch{ch}noffvalue", 0)
                     if message.type == 'note_on' and velocity > 0:
-                        self.osc_client.send_message(f"/ch{ch}note", note)
-                        self.osc_client.send_message(f"/ch{ch}nvalue", velocity)
                         self.log_message(f"Input -> /ch{ch}note {note}")
                         self.log_message(f"Input -> /ch{ch}nvalue {velocity}")
                     else:
-                        self.osc_client.send_message(f"/ch{ch}noteoff", note)
-                        self.osc_client.send_message(f"/ch{ch}noffvalue", 0)
                         self.log_message(f"Input -> /ch{ch}noteoff {note}")
                         self.log_message(f"Input -> /ch{ch}noffvalue 0")
             elif message.type == 'control_change':
-                if source == 'input':
-                    osc_address = f"/ch{ch}cc{message.control}"
-                    self.osc_client.send_message(osc_address, message.value)
-                    self.log_message(f"Input -> {osc_address} {message.value}")
+                cc_number = message.control
+                cc_value = message.value
+                if self.osc_client:
+                    # Send /chXcc with CC number (int 0-127)
+                    self.osc_client.send_message(f"/ch{ch}cc", cc_number)
+                    self.log_message(f"Input -> /ch{ch}cc {cc_number}")
+
+                    # Send /chXccvalue with CC value scaled to float 0-1
+                    scaled_value = cc_value / 127.0
+                    self.osc_client.send_message(f"/ch{ch}ccvalue", float(scaled_value))
+                    self.log_message(f"Input -> /ch{ch}ccvalue {scaled_value:.3f}")
             elif message.type == 'pitchwheel':
-                if source == 'input':
+                if self.osc_client:
                     osc_address = f"/ch{ch}pitch"
                     self.osc_client.send_message(osc_address, message.pitch)
-                    self.log_message(f"Input -> {osc_address} {message.pitch}")
-            elif message.type == 'aftertouch':
-                osc_address = f"/ch{ch}pressure"
-                self.osc_client.send_message(osc_address, message.value)
                 if source == 'input':
-                    self.log_message(f"Input -> {osc_address} {message.value}")
+                    self.log_message(f"Input -> /ch{ch}pitch {message.pitch}")
+            elif message.type == 'aftertouch':
+                if self.osc_client:
+                    osc_address = f"/ch{ch}pressure"
+                    self.osc_client.send_message(osc_address, message.value)
+                if source == 'input':
+                    self.log_message(f"Input -> /ch{ch}pressure {message.value}")
+            else:
+                self.log_message(f"Ignored message type: {message.type}")
         else:
             self.log_message(f"Ignored message without channel: {message}")
 
@@ -1071,13 +1206,11 @@ class OSCMIDIApp:
                 except Exception as e:
                     messagebox.showwarning("MIDI Output Error", f"Could not open MIDI output: {e}")
 
-            # Check port usage
-            if self.is_port_in_use(osc_in_port):
-                messagebox.showerror("Error", f"Port {osc_in_port} is in use.")
-                return
-
+            # Create the OSC client (outgoing)
             self.osc_client = udp_client.SimpleUDPClient(osc_out_ip, osc_out_port)
 
+            # Start the asynchronous OSC server with the chosen port
+            # (We allow multiple processes to share via SO_REUSEPORT if the OS supports it.)
             self.osc_server_task = asyncio.run_coroutine_threadsafe(
                 self.start_osc_server_async(osc_in_port),
                 self.loop
@@ -1086,6 +1219,7 @@ class OSCMIDIApp:
                 self.loop_thread = threading.Thread(target=self.loop.run_forever, daemon=True)
                 self.loop_thread.start()
 
+            # Save config
             self.saved_out_ip = osc_out_ip
             self.saved_out_port = osc_out_port
             self.saved_port = osc_in_port
@@ -1096,9 +1230,14 @@ class OSCMIDIApp:
             self.start_button.config(text="Stop and Quit")
             self.log_message("OSC Server started (MIDI optional).")
         else:
-            self.quit_app()
+            self.stop()
 
     async def start_osc_server_async(self, port):
+        """
+        Create and bind a shared socket manually with SO_REUSEPORT
+        (if supported by the OS). This allows multiple apps to receive
+        the same incoming OSC messages on the same port.
+        """
         disp = dispatcher.Dispatcher()
         disp.map("/pause", self.handle_pause)
         disp.map("/play", self.handle_play)
@@ -1112,9 +1251,44 @@ class OSCMIDIApp:
         for i in range(1, 51):
             disp.map(f"/{i}", self.handle_numeric_skip)
 
-        server = osc_server.AsyncIOOSCUDPServer(("0.0.0.0", port), disp, self.loop)
+        # Create a UDP socket ourselves to set SO_REUSEPORT
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Allow re-bind if the OS supports it
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            self.log_message("SO_REUSEPORT enabled (your OS must support it).")
+        except AttributeError:
+            # SO_REUSEPORT might not be available on all systems
+            self.log_message("SO_REUSEPORT not available on this platform.")
+
+        # 0.0.0.0 means all interfaces
+        try:
+            sock.bind(("0.0.0.0", port))
+            self.log_message(f"OSC Server bound to port {port}.")
+            self.set_connection_status('green')
+        except OSError as e:
+            self.log_message(f"Error binding to port {port}: {e}")
+            messagebox.showerror("Binding Error", f"Could not bind to port {port}: {e}")
+            self.set_connection_status('red')
+            return
+
+        self.log_message(f"Async OSC Server binding on port {port}...")
+        server = osc_server.AsyncIOOSCUDPServer(
+            None,   # let python-osc skip its own bind
+            disp,
+            self.loop,
+            sock=sock  # supply our shared socket
+        )
         transport, protocol = await server.create_serve_endpoint()
-        self.log_message(f"Async OSC Server started on port {port}.")
+        self.server_transport = transport
+        self.server_protocol = protocol
+        self.log_message(f"Async OSC Server started on port {port} with shared socket.")
+
+    def set_connection_status(self, color):
+        if color not in ['red', 'green']:
+            color = 'red'
+        self.master.after(0, lambda: self.connection_indicator.itemconfig(self.indicator, fill=color))
 
     # ----------------- OSC Handlers ----------------- #
     def handle_previous(self, address, *args):
@@ -1197,37 +1371,8 @@ class OSCMIDIApp:
     async def midi_to_osc(self, midi_in):
         while True:
             for message in midi_in.iter_pending():
-                await self.process_midi_message(message)
+                self.handle_midi_message(message, source='input')
             await asyncio.sleep(0.01)
-
-    async def process_midi_message(self, message):
-        """
-        Convert incoming MIDI messages -> OSC.
-        """
-        if message.type == 'note_on':
-            ch_note = f"/ch{message.channel + 1}note"
-            ch_vel = f"/ch{message.channel + 1}nvalue"
-            self.osc_client.send_message(ch_note, message.note)
-            self.osc_client.send_message(ch_vel, message.velocity)
-            self.log_message(f"Input -> {ch_note} {message.note}, vel={message.velocity}")
-        elif message.type == 'note_off':
-            ch_note = f"/ch{message.channel + 1}noteoff"
-            ch_vel = f"/ch{message.channel + 1}noffvalue"
-            self.osc_client.send_message(ch_note, message.note)
-            self.osc_client.send_message(ch_vel, 0)
-            self.log_message(f"Input -> {ch_note} {message.note}, vel=0")
-        elif message.type == 'control_change':
-            osc_address = f"/ch{message.channel + 1}cc{message.control}"
-            self.osc_client.send_message(osc_address, message.value)
-            self.log_message(f"Input -> {osc_address} {message.value}")
-        elif message.type == 'aftertouch':
-            osc_address = f"/ch{message.channel + 1}pressure"
-            self.osc_client.send_message(osc_address, message.value)
-            self.log_message(f"Input -> {osc_address} {message.value}")
-        elif message.type == 'pitchwheel':
-            osc_address = f"/ch{message.channel + 1}pitch"
-            self.osc_client.send_message(osc_address, message.pitch)
-            self.log_message(f"Input -> {osc_address} {message.pitch}")
 
     # ----------------------- Cleanup ------------------------------ #
     def quit_app(self):
@@ -1246,20 +1391,19 @@ class OSCMIDIApp:
             self.sync_stop_event.set()
             if self.sync_thread and self.sync_thread.is_alive():
                 self.sync_thread.join(timeout=1)
+            # Close OSC server
+            if self.server_transport:
+                self.server_transport.close()
+                self.server_transport = None
+                self.server_protocol = None
+                self.set_connection_status('red')
+                self.log_message("OSC Server stopped.")
             self.loop.call_soon_threadsafe(self.loop.stop)
             if self.loop_thread and self.loop_thread.is_alive():
                 self.loop_thread.join(timeout=1)
             self.master.quit()
 
-    def is_port_in_use(self, port):
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            try:
-                s.bind(('0.0.0.0', port))
-                return False
-            except OSError:
-                return True
-
-# ----------------------- Main Execution ------------------------------ #
+    # ----------------------- Main Execution ------------------------------ #
 if __name__ == "__main__":
     root = tk.Tk()
     root.geometry("210x210")  # Start with a small window size
