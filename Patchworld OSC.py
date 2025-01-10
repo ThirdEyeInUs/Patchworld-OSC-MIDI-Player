@@ -45,11 +45,11 @@ class Tooltip:
             self.tooltip_window.destroy()
         self.tooltip_window = None
 
+
 # ----------------------- OSCMIDIApp Class ---------------------------- #
 class OSCMIDIApp:
     CONFIG_FILE = "config.json"
-
-    MAX_LOG_MESSAGES = 50  # Log capacity
+    MAX_LOG_MESSAGES = 100  # Increased log capacity for better tracking
 
     def __init__(self, master):
         self.master = master
@@ -57,27 +57,32 @@ class OSCMIDIApp:
 
         # --- Dark theme (ttk.Style) ---
         style = ttk.Style(self.master)
-        style.theme_use('default')
-        style.configure('.',
-                        background='#2B2B2B',
-                        foreground='#FFFFFF',
-                        fieldbackground='#3A3A3A')
+        style.theme_use('clam')  # Use 'clam' for better styling control
+        style.configure('.', background='#2B2B2B', foreground='#FFFFFF', bordercolor='#2B2B2B')
         style.configure('TFrame', background='#2B2B2B')
         style.configure('TLabel', background='#2B2B2B', foreground='#FFFFFF')
         style.configure('TButton', background='#3A3A3A', foreground='#FFFFFF')
-        style.map('TButton', background=[('active', '#4D4D4D')])
+        style.map('TButton',
+                  background=[('active', '#4D4D4D')],
+                  foreground=[('active', '#FFFFFF')])
         style.configure('TCheckbutton',
                         background='#2B2B2B',
                         foreground='#FFFFFF')
         style.map('TCheckbutton',
-                  background=[('active', '#4D4D4D')])
+                  background=[('active', '#4D4D4D')],
+                  foreground=[('active', '#FFFFFF')])
         style.configure('TEntry',
                         foreground='#FFFFFF',
                         background='#3A3A3A',
-                        fieldbackground='#3A3A3A')
+                        fieldbackground='#3A3A3A',
+                        insertcolor='#FFFFFF')
+        style.configure('TCombobox',
+                        foreground='#FFFFFF',
+                        fieldbackground='#3A3A3A',
+                        background='#2B2B2B')
         self.master.configure(bg='#2B2B2B')
 
-        # --- Playback/Playlist state ---
+        # Playback/Playlist State
         self.original_playlist = []
         self.playlist = []
         self.current_index = 0
@@ -124,13 +129,42 @@ class OSCMIDIApp:
         # Alarms
         self.alarms = []  # Each entry: { "datetime": dt, "address": str, "args": list, "triggered": bool }
 
-        # UI frames visibility
-        self.content_visible = False   # MIDI/Log
+        # Track each burger menu's visibility
+        self.content_visible = False      # MIDI/Log
         self.alarm_frame_visible = False  # Alarm
+        self.cc_frame_visible = False     # CC
 
         # Server connection transport and protocol
         self.server_transport = None
         self.server_protocol = None
+
+        # OSC Addresses Mappings
+        self.osc_addresses_in = {
+            "pause": "/pause",
+            "play": "/play",
+            "skip": "/skip",
+            "back": "/back",
+            "previous": "/previous",
+            "bpm": "/bpm",
+            "bpm1": "/bpm1",
+            "resetbpm": "/resetbpm",
+        }
+
+        self.osc_addresses_out = {
+            "sync": "/sync",
+            "chXnote": "/chXnote",
+            "chXnvalue": "/chXnvalue",
+            "chXnoteoff": "/chXnoteoff",
+            "chXnoffvalue": "/chXnoffvalue",
+            "chXcc": "/chXcc",
+            "chXccvalue": "/chXccvalue",
+            "chXpitch": "/chXpitch",
+            "chXpressure": "/chXpressure",
+        }
+
+        # Store default OSC addresses for reset functionality
+        self.default_osc_addresses_in = self.osc_addresses_in.copy()
+        self.default_osc_addresses_out = self.osc_addresses_out.copy()
 
         # Load icon (optional)
         self.load_icon()
@@ -151,6 +185,9 @@ class OSCMIDIApp:
         # Start log polling
         self.master.after(100, self.poll_log_queue)
 
+        # Setup protocol handler for window close
+        self.master.protocol("WM_DELETE_WINDOW", self.quit_app)
+
     def load_icon(self):
         try:
             icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
@@ -167,6 +204,9 @@ class OSCMIDIApp:
                 self.saved_midi_out_port = config.get("midi_output_port", "")
                 self.saved_out_ip = config.get("osc_out_ip", self.get_local_ip())
                 self.saved_out_port = config.get("osc_out_port", "3330")
+                # Load OSC addresses
+                self.osc_addresses_in.update(config.get("osc_addresses_in", {}))
+                self.osc_addresses_out.update(config.get("osc_addresses_out", {}))
         else:
             self.saved_port = "5550"
             self.saved_midi_port = ""
@@ -181,70 +221,78 @@ class OSCMIDIApp:
             "midi_output_port": self.saved_midi_out_port,
             "osc_out_ip": self.saved_out_ip,
             "osc_out_port": self.saved_out_port,
+            "osc_addresses_in": self.osc_addresses_in,
+            "osc_addresses_out": self.osc_addresses_out,
         }
         with open(self.CONFIG_FILE, 'w') as f:
-            json.dump(config, f)
+            json.dump(config, f, indent=4)
 
     def setup_ui(self):
-        self.master.geometry("290x230")  # Start small
+        # Increase the base window size a bit
+        self.master.geometry("500x350")
 
         # ------------- Menu Bar ------------- #
-        menu_bar = tk.Menu(self.master)
+        menu_bar = tk.Menu(self.master, bg='#2B2B2B', fg='#FFFFFF')
         self.master.config(menu=menu_bar)
 
-        # Add Help Menu
-        help_menu = tk.Menu(menu_bar, tearoff=0)
+        # Help Menu
+        help_menu = tk.Menu(menu_bar, tearoff=0, bg='#2B2B2B', fg='#FFFFFF')
         menu_bar.add_cascade(label="Help", menu=help_menu)
         help_menu.add_command(label="OSC Commands", command=self.show_help)
+
+        # Addresses Menu
+        addresses_menu = tk.Menu(menu_bar, tearoff=0, bg='#2B2B2B', fg='#FFFFFF')
+        menu_bar.add_cascade(label="Addresses", menu=addresses_menu)
+        addresses_menu.add_command(label="Edit OSC Addresses", command=self.open_addresses_editor)
 
         # ------------- Settings Frame (top area) ------------- #
         settings_frame = ttk.Frame(self.master)
         settings_frame.pack(padx=10, pady=10, fill=tk.X)
 
-        ttk.Label(settings_frame, text="IP for OSC In:").grid(row=0, column=0, sticky=tk.W)
+        ttk.Label(settings_frame, text="IP for OSC In:").grid(row=0, column=0, sticky=tk.W, pady=2)
         self.ip_entry = ttk.Entry(settings_frame)
         self.saved_ip = self.get_local_ip()
         self.ip_entry.insert(0, self.saved_ip)
         self.ip_entry.config(state='readonly')
-        self.ip_entry.grid(row=0, column=1, sticky=tk.EW)
+        self.ip_entry.grid(row=0, column=1, sticky=tk.EW, pady=2)
         Tooltip(self.ip_entry, "Local IP address for OSC server.")
 
-        ttk.Label(settings_frame, text="Port for OSC In:").grid(row=1, column=0, sticky=tk.W)
+        ttk.Label(settings_frame, text="Port for OSC In:").grid(row=1, column=0, sticky=tk.W, pady=2)
         self.port_entry = ttk.Entry(settings_frame)
         self.port_entry.insert(0, self.saved_port)
-        self.port_entry.grid(row=1, column=1, sticky=tk.EW)
+        self.port_entry.grid(row=1, column=1, sticky=tk.EW, pady=2)
         Tooltip(self.port_entry, "Port number where OSC server listens.")
 
-        ttk.Label(settings_frame, text="Select MIDI Input:").grid(row=2, column=0, sticky=tk.W)
+        ttk.Label(settings_frame, text="Select MIDI Input:").grid(row=2, column=0, sticky=tk.W, pady=2)
         self.midi_input_combo = ttk.Combobox(settings_frame, values=self.get_midi_ports())
         self.midi_input_combo.set(self.saved_midi_port)
-        self.midi_input_combo.grid(row=2, column=1, sticky=tk.EW)
+        self.midi_input_combo.grid(row=2, column=1, sticky=tk.EW, pady=2)
         Tooltip(self.midi_input_combo, "Choose your MIDI input device (optional).")
 
-        ttk.Label(settings_frame, text="Select MIDI Output:").grid(row=3, column=0, sticky=tk.W)
+        ttk.Label(settings_frame, text="Select MIDI Output:").grid(row=3, column=0, sticky=tk.W, pady=2)
         self.midi_out_combo = ttk.Combobox(settings_frame, values=self.get_midi_output_ports())
         self.midi_out_combo.set(self.saved_midi_out_port)
-        self.midi_out_combo.grid(row=3, column=1, sticky=tk.EW)
+        self.midi_out_combo.grid(row=3, column=1, sticky=tk.EW, pady=2)
         Tooltip(self.midi_out_combo, "Choose your MIDI output device (optional).")
 
-        ttk.Label(settings_frame, text="IP for OSC Out:").grid(row=4, column=0, sticky=tk.W)
+        ttk.Label(settings_frame, text="IP for OSC Out:").grid(row=4, column=0, sticky=tk.W, pady=2)
         self.output_ip_entry = ttk.Entry(settings_frame)
         self.output_ip_entry.insert(0, self.saved_out_ip)
-        self.output_ip_entry.grid(row=4, column=1, sticky=tk.EW)
+        self.output_ip_entry.grid(row=4, column=1, sticky=tk.EW, pady=2)
         Tooltip(self.output_ip_entry, "Destination IP address for OSC messages.")
 
-        ttk.Label(settings_frame, text="Port for OSC Out:").grid(row=5, column=0, sticky=tk.W)
+        ttk.Label(settings_frame, text="Port for OSC Out:").grid(row=5, column=0, sticky=tk.W, pady=2)
         self.output_port_entry = ttk.Entry(settings_frame)
         self.output_port_entry.insert(0, self.saved_out_port)
-        self.output_port_entry.grid(row=5, column=1, sticky=tk.EW)
+        self.output_port_entry.grid(row=5, column=1, sticky=tk.EW, pady=2)
         Tooltip(self.output_port_entry, "Destination port for OSC messages.")
 
-        # NEW: Shared Socket ID (1-4)
-        ttk.Label(settings_frame, text="Shared Socket ID:").grid(row=6, column=0, sticky=tk.W)
+        # Shared Socket ID (1-4)
+        ttk.Label(settings_frame, text="Shared Socket ID:").grid(row=6, column=0, sticky=tk.W, pady=2)
         self.shared_socket_combo = ttk.Combobox(settings_frame, values=["1", "2", "3", "4"], width=5)
         self.shared_socket_combo.current(0)  # Default to "1"
-        self.shared_socket_combo.grid(row=6, column=1, sticky=tk.EW)
-        Tooltip(self.shared_socket_combo, "Pick 1-4 if you want multiple apps to share the same port.\nAll must set the same port & enable SO_REUSEPORT for it to work.")
+        self.shared_socket_combo.grid(row=6, column=1, sticky=tk.W, pady=2)
+        Tooltip(self.shared_socket_combo, "Pick 1-4 if multiple apps share the same port.\nAll must set the same port & enable SO_REUSEPORT if supported.")
 
         settings_frame.columnconfigure(1, weight=1)
 
@@ -259,39 +307,46 @@ class OSCMIDIApp:
         # Connection Indicator
         self.connection_indicator = tk.Canvas(server_frame, width=20, height=20, bg='#2B2B2B', highlightthickness=0)
         self.connection_indicator.pack(side=tk.LEFT, padx=5)
-        # Draw the circle, initial red
         self.indicator = self.connection_indicator.create_oval(5, 5, 15, 15, fill='red')
 
         # ------ Frame for Burger Menus side-by-side ------
         burger_frame = ttk.Frame(self.master)
         burger_frame.pack(pady=2)
 
-        # ------------- Burger Menu 1 (MIDI Player/Log) ------------- #
-        self.menu_button = ttk.Button(burger_frame, text="≡ Midi Player/Log", command=self.toggle_midi_menu, width=17)
+        # Burger Menu 1 (MIDI/Log)
+        self.menu_button = ttk.Button(burger_frame, text="≡ Midi Player/Log",
+                                      command=self.toggle_midi_menu, width=17)
         self.menu_button.pack(side=tk.LEFT, padx=5)
         Tooltip(self.menu_button, "Show/Hide MIDI Player and Log UI.")
 
-        # ------------- Burger Menu 2 (Alarm Clock) ------------- #
-        self.alarm_menu_button = ttk.Button(burger_frame, text="≡ Alarm Clock", command=self.toggle_alarm_menu, width=17)
+        # Burger Menu 2 (Alarm Clock)
+        self.alarm_menu_button = ttk.Button(burger_frame, text="≡ Alarm Clock",
+                                            command=self.toggle_alarm_menu, width=17)
         self.alarm_menu_button.pack(side=tk.LEFT, padx=5)
         Tooltip(self.alarm_menu_button, "Show/Hide the Alarm Clock scheduling UI.")
 
-        # ------------- Content Frame (MIDI/Log) ------------- #
-        self.content_frame = ttk.Frame(self.master)  # hidden initially
+        # Burger Menu 3 (CC)
+        self.cc_menu_button = ttk.Button(burger_frame, text="≡ CC",
+                                         command=self.toggle_cc_menu, width=17)
+        self.cc_menu_button.pack(side=tk.LEFT, padx=5)
+        Tooltip(self.cc_menu_button, "Show/Hide the CC Controls UI.")
+
+        # Content Frame (MIDI/Log) - hidden initially
+        self.content_frame = ttk.Frame(self.master)
         self.setup_midi_ui()
 
-        # ------------- Alarm Frame (Scheduling) ------------- #
-        self.alarm_frame = ttk.Frame(self.master)  # hidden initially
+        # Alarm Frame (Scheduling) - hidden initially
+        self.alarm_frame = ttk.Frame(self.master)
         self.setup_alarm_ui()
+
+        # CC Frame - hidden initially
+        self.cc_frame = ttk.Frame(self.master)
+        self.setup_cc_ui()
 
         self.load_bottom_logo()
 
     def setup_midi_ui(self):
-        """
-        Build out widgets for the MIDI player, logs, BPM, playlist, etc.
-        This content is toggled by self.menu_button.
-        """
-        # Controls Frame
+        # MIDI/Log UI
         controls_frame = ttk.Frame(self.content_frame)
         controls_frame.pack(pady=5)
 
@@ -315,7 +370,6 @@ class OSCMIDIApp:
         self.previous_button.pack(side=tk.LEFT, padx=5)
         Tooltip(self.previous_button, "Load the previous MIDI file in the playlist.")
 
-        # File Controls Frame
         file_controls_frame = ttk.Frame(self.content_frame)
         file_controls_frame.pack(pady=5)
 
@@ -331,7 +385,6 @@ class OSCMIDIApp:
         self.unload_button.pack(side=tk.LEFT, padx=5)
         Tooltip(self.unload_button, "Clear all files from the playlist.")
 
-        # Playback Options Frame
         playback_options_frame = ttk.Frame(self.content_frame)
         playback_options_frame.pack(pady=5)
 
@@ -353,7 +406,6 @@ class OSCMIDIApp:
         self.randomize_button.pack(side=tk.LEFT, padx=5)
         Tooltip(self.randomize_button, "Shuffle or restore the playlist order.")
 
-        # Sync BPM Checkbutton
         self.sync_checkbutton = ttk.Checkbutton(
             playback_options_frame,
             text="Sync BPM",
@@ -363,11 +415,10 @@ class OSCMIDIApp:
         self.sync_checkbutton.pack(side=tk.LEFT, padx=5)
         Tooltip(self.sync_checkbutton, "Enable or disable sending /sync messages.")
 
-        # Info Label
-        self.info_label = tk.Label(self.content_frame, text="No file loaded", fg="#FFFFFF", bg="#2B2B2B")
+        self.info_label = tk.Label(self.content_frame, text="No file loaded",
+                                   fg="#FFFFFF", bg="#2B2B2B")
         self.info_label.pack(pady=5)
 
-        # BPM Frame
         bpm_frame = ttk.Frame(self.content_frame)
         bpm_frame.pack(pady=5, fill=tk.X)
 
@@ -389,9 +440,11 @@ class OSCMIDIApp:
 
         self.reset_bpm_button = ttk.Button(bpm_frame, text="Reset Tempo", command=self.reset_bpm)
         self.reset_bpm_button.pack(side=tk.LEFT, padx=5)
+        Tooltip(self.reset_bpm_button, "Reset BPM to default.")
 
         self.lock_bpm_button = ttk.Button(bpm_frame, text="Lock Tempo", command=self.toggle_lock_bpm)
         self.lock_bpm_button.pack(side=tk.LEFT, padx=5)
+        Tooltip(self.lock_bpm_button, "Lock or unlock BPM slider.")
 
         self.ignore_bpm_checkbox = ttk.Checkbutton(
             bpm_frame,
@@ -400,11 +453,12 @@ class OSCMIDIApp:
             command=self.toggle_ignore_bpm
         )
         self.ignore_bpm_checkbox.pack(side=tk.LEFT, padx=5)
+        Tooltip(self.ignore_bpm_checkbox, "Ignore incoming /bpm OSC messages.")
 
-        # Log Frame
         tk.Label(self.content_frame, text="Log Messages:", bg='#2B2B2B', fg='#FFFFFF').pack()
         log_frame = ttk.Frame(self.content_frame)
-        log_frame.pack()
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=10)
+
         self.log_text = tk.Text(
             log_frame,
             height=8,
@@ -412,7 +466,8 @@ class OSCMIDIApp:
             state='disabled',
             bg='#1E1E1E',
             fg='#FFFFFF',
-            insertbackground='#FFFFFF'
+            insertbackground='#FFFFFF',
+            wrap='word'
         )
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
@@ -420,7 +475,6 @@ class OSCMIDIApp:
         self.log_text.config(yscrollcommand=log_scroll.set)
         log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Playlist Frame
         tk.Label(self.content_frame, text="Playlist:", bg='#2B2B2B', fg='#FFFFFF').pack()
         playlist_frame = ttk.Frame(self.content_frame)
         playlist_frame.pack(fill=tk.BOTH, expand=True, padx=10)
@@ -432,7 +486,7 @@ class OSCMIDIApp:
             fg='#FFFFFF',
             highlightbackground='#1E1E1E',
             selectbackground='#3A3A3A',
-            height=15
+            height=10
         )
         self.playlist_box.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
@@ -441,48 +495,43 @@ class OSCMIDIApp:
         playlist_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
     def setup_alarm_ui(self):
-        """
-        Creates the widgets used to schedule and display alarms.
-        """
-        # Current time display
+        # Alarm Clock UI
         time_frame = ttk.Frame(self.alarm_frame)
         time_frame.pack(pady=5, fill=tk.X)
         self.clock_label = tk.Label(time_frame, text="Current Time: --:--:--", bg="#2B2B2B", fg="#FFFFFF")
         self.clock_label.pack(side=tk.LEFT, padx=5)
 
-        # Alarm Scheduling Frame
         schedule_frame = ttk.Frame(self.alarm_frame)
         schedule_frame.pack(pady=5, fill=tk.X)
 
-        # Compute default date/time = now + 2 minutes
         now = datetime.now()
         default_date_str = now.strftime("%Y-%m-%d")
-        default_time_str = (now + timedelta(minutes=2)).strftime("%H:%M:%S")  # with seconds
+        default_time_str = (now + timedelta(minutes=2)).strftime("%H:%M:%S")
 
-        ttk.Label(schedule_frame, text="Date (YYYY-MM-DD):").grid(row=0, column=0, sticky=tk.W, padx=5)
+        ttk.Label(schedule_frame, text="Date (YYYY-MM-DD):").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
         self.alarm_date_entry = ttk.Entry(schedule_frame, width=12)
-        self.alarm_date_entry.grid(row=0, column=1, sticky=tk.W, padx=5)
+        self.alarm_date_entry.grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
         self.alarm_date_entry.insert(0, default_date_str)
 
-        ttk.Label(schedule_frame, text="Time (HH:MM:SS):").grid(row=1, column=0, sticky=tk.W, padx=5)
+        ttk.Label(schedule_frame, text="Time (HH:MM:SS):").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
         self.alarm_time_entry = ttk.Entry(schedule_frame, width=10)
-        self.alarm_time_entry.grid(row=1, column=1, sticky=tk.W, padx=5)
+        self.alarm_time_entry.grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
         self.alarm_time_entry.insert(0, default_time_str)
 
-        ttk.Label(schedule_frame, text="OSC Address:").grid(row=2, column=0, sticky=tk.W, padx=5)
+        ttk.Label(schedule_frame, text="OSC Address:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
         self.alarm_address_entry = ttk.Entry(schedule_frame, width=20)
-        self.alarm_address_entry.grid(row=2, column=1, sticky=tk.W, padx=5)
-        self.alarm_address_entry.insert(0, "/clock")  # default
+        self.alarm_address_entry.grid(row=2, column=1, sticky=tk.W, padx=5, pady=5)
+        self.alarm_address_entry.insert(0, "/clock")
 
-        ttk.Label(schedule_frame, text="OSC Args:").grid(row=3, column=0, sticky=tk.W, padx=5)
+        ttk.Label(schedule_frame, text="OSC Args:").grid(row=3, column=0, sticky=tk.W, padx=5, pady=5)
         self.alarm_args_entry = ttk.Entry(schedule_frame, width=20)
-        self.alarm_args_entry.grid(row=3, column=1, sticky=tk.W, padx=5)
-        self.alarm_args_entry.insert(0, "1.0")  # default float
+        self.alarm_args_entry.grid(row=3, column=1, sticky=tk.W, padx=5, pady=5)
+        self.alarm_args_entry.insert(0, "1.0")
 
         self.schedule_alarm_button = ttk.Button(schedule_frame, text="Schedule Alarm", command=self.schedule_alarm)
         self.schedule_alarm_button.grid(row=4, column=0, columnspan=2, pady=5)
+        Tooltip(self.schedule_alarm_button, "Schedule a new alarm.")
 
-        # Alarms List
         tk.Label(self.alarm_frame, text="Scheduled Alarms:", bg='#2B2B2B', fg='#FFFFFF').pack()
         alarm_list_frame = ttk.Frame(self.alarm_frame)
         alarm_list_frame.pack(fill=tk.BOTH, expand=True, padx=10)
@@ -502,11 +551,57 @@ class OSCMIDIApp:
         self.alarm_listbox.config(yscrollcommand=alarm_scroll.set)
         alarm_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Remove alarm
         self.remove_alarm_button = ttk.Button(self.alarm_frame, text="Remove Selected Alarm", command=self.remove_selected_alarm)
         self.remove_alarm_button.pack(pady=5)
+        Tooltip(self.remove_alarm_button, "Remove the selected alarm.")
 
-    # ------------------ Menu Handlers ------------------ #
+    def setup_cc_ui(self):
+        """
+        Creates the widgets for 6 CC sliders (0–127), 6 on/off toggles,
+        and 6 custom OSC address input fields.
+        """
+        self.cc_sliders = []
+        self.cc_toggles = []
+        self.cc_address_entries = []
+
+        ttk.Label(self.cc_frame, text="CC Controls", foreground='#FFFFFF').pack(pady=5)
+
+        cc_controls_frame = ttk.Frame(self.cc_frame)
+        cc_controls_frame.pack(padx=10, pady=10, fill=tk.X)
+
+        for i in range(6):
+            row_frame = ttk.Frame(cc_controls_frame)
+            row_frame.pack(fill=tk.X, pady=3)
+
+            # Label
+            ttk.Label(row_frame, text=f"CC #{i+1}:", width=10).pack(side=tk.LEFT, padx=5)
+
+            # Slider
+            slider = tk.Scale(row_frame, from_=0, to=127, orient=tk.HORIZONTAL,
+                              length=150, bg='#2B2B2B', fg='#FFFFFF',
+                              highlightbackground='#2B2B2B',
+                              troughcolor='#3A3A3A',
+                              activebackground='#4D4D4D')
+            slider.set(0)
+            slider.pack(side=tk.LEFT, padx=5)
+            self.cc_sliders.append(slider)
+
+            # Bind the slider to send OSC on change
+            slider.bind("<ButtonRelease-1>", lambda event, idx=i: self.send_cc_message(idx))
+
+            # Toggle
+            toggle_var = tk.BooleanVar(value=False)
+            toggle_btn = ttk.Checkbutton(row_frame, text="On/Off", variable=toggle_var,
+                                         command=lambda idx=i: self.send_cc_toggle(idx))
+            toggle_btn.pack(side=tk.LEFT, padx=5)
+            self.cc_toggles.append(toggle_var)
+
+            # OSC Address
+            addr_entry = ttk.Entry(row_frame, width=15)
+            addr_entry.insert(0, f"/myCC{i+1}")  # default address
+            addr_entry.pack(side=tk.LEFT, padx=5)
+            self.cc_address_entries.append(addr_entry)
+
     def show_help(self):
         help_window = tk.Toplevel(self.master)
         help_window.title("Help - OSC Commands")
@@ -517,120 +612,177 @@ class OSCMIDIApp:
         help_window.transient(self.master)
         help_window.grab_set()
 
-        # Create a Text widget to display commands
         text = tk.Text(help_window, wrap='word', bg='#2B2B2B', fg='#FFFFFF', font=("Courier", 10))
         text.pack(expand=True, fill='both', padx=10, pady=10)
 
-        # Insert the OSC commands
         osc_commands = """
 ------ Incoming OSC Addresses ------
 /pause
     Pause playback.
 
-/play
+ /play
     Resume playback.
 
-/skip
+ /skip
     Skip to next track.
 
-/back
+ /back
     Restart current track.
 
-/previous
+ /previous
     Return to previous track.
 
-/bpm
+ /bpm
     Set BPM via OSC.
 
-/bpm1
+ /bpm1
     Toggle ignoring BPM sync.
 
-/resetbpm
+ /resetbpm
     Reset BPM to song's default.
 
-/1 - /50
+ /1 - /50
     Load specific song by number by /X (X=1-50).
 
 ------ Outgoing OSC Addresses ------
 /sync
     Sent periodically with BPM value.
 
-/chXnote
+ /chXnote
     Note on.
 
-/chXnvalue
+ /chXnvalue
     Note velocity, range 0-127.
 
-/chXnoteoff
+ /chXnoteoff
     Note off.
 
-/chXnoffvalue
+ /chXnoffvalue
     Note off velocity, range 0-127.
 
-/chXcc
+ /chXcc
     Control Change number, range 0-127.
 
-/chXccvalue
+ /chXccvalue
     Control Change value scaled, range 0-1.
 
-/chXpitch
+ /chXpitch
     Pitch wheel.
 
-/chXpressure
+ /chXpressure
     Aftertouch.
 """
         text.insert('1.0', osc_commands)
         text.config(state='disabled')
 
-    # ------------------ Burger Menus / Toggling  ------------------ #
-    def toggle_midi_menu(self):
-        """
-        If the alarm menu is open, close it. Then toggle MIDI/Log.
-        """
-        if self.alarm_frame_visible:
-            self.alarm_frame.pack_forget()
-            self.alarm_frame_visible = False
-            self.alarm_menu_button.config(text="≡ Alarm Clock")
+    def open_addresses_editor(self):
+        editor_window = tk.Toplevel(self.master)
+        editor_window.title("Edit OSC Addresses")
+        editor_window.geometry("600x700")
+        editor_window.resizable(False, False)
 
-        if self.content_visible:
-            self.content_frame.pack_forget()
-            self.content_visible = False
-            self.menu_button.config(text="≡ Midi Player/Log")
-            self.master.geometry("290x230")
-            self.log_message("MIDI/Log Menu hidden.")
-        else:
-            self.content_frame.pack(pady=5)
-            self.content_visible = True
-            self.menu_button.config(text="✕ Midi Player/Log")
-            self.master.geometry("475x675")
-            self.log_message("MIDI/Log Menu shown.")
+        # Make it modal
+        editor_window.transient(self.master)
+        editor_window.grab_set()
 
-    def toggle_alarm_menu(self):
-        """
-        If the MIDI/Log menu is open, close it. Then toggle alarm frame.
-        """
-        if self.content_visible:
-            self.content_frame.pack_forget()
-            self.content_visible = False
-            self.menu_button.config(text="≡ Midi Player/Log")
+        notebook = ttk.Notebook(editor_window)
+        notebook.pack(expand=True, fill='both', padx=10, pady=10)
 
-        if self.alarm_frame_visible:
-            self.alarm_frame.pack_forget()
-            self.alarm_frame_visible = False
-            self.alarm_menu_button.config(text="≡ Alarm Clock")
-            self.master.geometry("290x230")
-            self.log_message("Alarm Clock Menu hidden.")
-        else:
-            self.alarm_frame.pack(pady=5)
-            self.alarm_frame_visible = True
-            self.alarm_menu_button.config(text="✕ Alarm Clock")
-            self.master.geometry("475x675")
-            self.log_message("Alarm Clock Menu shown.")
+        incoming_frame = ttk.Frame(notebook)
+        notebook.add(incoming_frame, text="Incoming Addresses")
 
-    # ---------------------- Alarms ---------------------- #
+        outgoing_frame = ttk.Frame(notebook)
+        notebook.add(outgoing_frame, text="Outgoing Addresses")
+
+        incoming_entries = {}
+        outgoing_entries = {}
+
+        def create_address_fields(frame, addresses, entries):
+            for idx, (action, address) in enumerate(addresses.items()):
+                ttk.Label(frame, text=f"{action.capitalize()} Address:").grid(row=idx, column=0, sticky=tk.W, padx=5, pady=5)
+                entry = ttk.Entry(frame, width=30)
+                entry.grid(row=idx, column=1, sticky=tk.W, padx=5, pady=5)
+                entry.insert(0, address)
+                entries[action] = entry
+
+        create_address_fields(incoming_frame, self.osc_addresses_in, incoming_entries)
+        create_address_fields(outgoing_frame, self.osc_addresses_out, outgoing_entries)
+
+        buttons_frame = ttk.Frame(editor_window)
+        buttons_frame.pack(pady=10)
+
+        save_button = ttk.Button(buttons_frame, text="Save Addresses",
+                                 command=lambda: self.save_addresses(editor_window, incoming_entries, outgoing_entries))
+        save_button.pack(side=tk.LEFT, padx=5)
+        Tooltip(save_button, "Save the updated OSC addresses.")
+
+        reset_button = ttk.Button(buttons_frame, text="Reset to Default",
+                                  command=lambda: self.reset_addresses(incoming_entries, outgoing_entries))
+        reset_button.pack(side=tk.LEFT, padx=5)
+        Tooltip(reset_button, "Reset OSC addresses to default values.")
+
+    def reset_addresses(self, incoming_entries, outgoing_entries):
+        for action, entry in incoming_entries.items():
+            default_address = self.default_osc_addresses_in.get(action, "")
+            entry.delete(0, tk.END)
+            entry.insert(0, default_address)
+            self.osc_addresses_in[action] = default_address
+
+        for action, entry in outgoing_entries.items():
+            default_address = self.default_osc_addresses_out.get(action, "")
+            entry.delete(0, tk.END)
+            entry.insert(0, default_address)
+            self.osc_addresses_out[action] = default_address
+
+        self.save_config()
+        self.log_message("OSC Addresses reset to default and saved.")
+        messagebox.showinfo("Reset Successful", "OSC Addresses have been reset to default values.")
+
+    def save_addresses(self, window, incoming_entries, outgoing_entries):
+        for action, widget in incoming_entries.items():
+            new_address = widget.get().strip()
+            if not new_address.startswith("/"):
+                messagebox.showerror("Invalid Address", f"Incoming address for '{action}' must start with '/'.")
+                return
+            self.osc_addresses_in[action] = new_address
+
+        for action, widget in outgoing_entries.items():
+            new_address = widget.get().strip()
+            if not new_address.startswith("/"):
+                messagebox.showerror("Invalid Address", f"Outgoing address for '{action}' must start with '/'.")
+                return
+            self.osc_addresses_out[action] = new_address
+
+        self.save_config()
+        self.log_message("OSC Addresses updated and saved.")
+        messagebox.showinfo("Success", "OSC Addresses have been updated successfully.")
+
+        if self.server_transport:
+            self.log_message("Reloading OSC dispatcher with new addresses.")
+            self.reload_dispatcher()
+        window.destroy()
+
+    def reload_dispatcher(self):
+        if not self.server_protocol:
+            return
+        disp = dispatcher.Dispatcher()
+        disp.map(self.osc_addresses_in["pause"], self.handle_pause)
+        disp.map(self.osc_addresses_in["play"], self.handle_play)
+        disp.map(self.osc_addresses_in["skip"], self.handle_skip)
+        disp.map(self.osc_addresses_in["back"], self.handle_back)
+        disp.map(self.osc_addresses_in["previous"], self.handle_previous)
+        disp.map(self.osc_addresses_in["bpm"], self.handle_bpm)
+        disp.map(self.osc_addresses_in["bpm1"], self.handle_bpm1_toggle)
+        disp.map(self.osc_addresses_in["resetbpm"], self.handle_resetbpm)
+        for i in range(1, 51):
+            disp.map(f"/{i}", self.handle_numeric_skip)
+
+        self.server_protocol.dispatcher = disp
+        self.log_message("OSC Dispatcher reloaded with updated addresses.")
+
     def schedule_alarm(self):
         date_str = self.alarm_date_entry.get().strip()
-        time_str = self.alarm_time_entry.get().strip()  # now "HH:MM:SS"
+        time_str = self.alarm_time_entry.get().strip()
         address = self.alarm_address_entry.get().strip()
         args_str = self.alarm_args_entry.get().strip()
 
@@ -638,14 +790,15 @@ class OSCMIDIApp:
             messagebox.showwarning("Incomplete Data", "Please enter Date, Time (HH:MM:SS), and OSC Address.")
             return
 
-        # Parse datetime with seconds
         try:
             alarm_datetime = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
+            if alarm_datetime <= datetime.now():
+                messagebox.showwarning("Invalid Time", "Alarm time must be in the future.")
+                return
         except ValueError:
             messagebox.showwarning("Invalid Date/Time", "Use YYYY-MM-DD and HH:MM:SS (24-hour).")
             return
 
-        # Parse args
         args = args_str.split() if args_str else []
 
         alarm_entry = {
@@ -655,12 +808,11 @@ class OSCMIDIApp:
             "triggered": False
         }
         self.alarms.append(alarm_entry)
-        display_text = f"{alarm_datetime} -> {address} {' '.join(args)}"
+        display_text = f"{alarm_datetime.strftime('%Y-%m-%d %H:%M:%S')} -> {address} {' '.join(args)}"
         self.alarm_listbox.insert(tk.END, display_text)
 
         self.log_message(f"Scheduled alarm at {alarm_datetime}, address={address}, args={args}")
 
-        # ---- Reload default fields right after scheduling ----
         now = datetime.now()
         default_date_str = now.strftime("%Y-%m-%d")
         default_time_str = (now + timedelta(minutes=2)).strftime("%H:%M:%S")
@@ -676,6 +828,7 @@ class OSCMIDIApp:
     def remove_selected_alarm(self):
         selection = self.alarm_listbox.curselection()
         if not selection:
+            messagebox.showwarning("No Selection", "Please select an alarm to remove.")
             return
         index = selection[0]
         self.alarm_listbox.delete(index)
@@ -713,27 +866,14 @@ class OSCMIDIApp:
                 alarm["triggered"] = True
         self.master.after(1000, self.check_alarms)
 
-    # ------------------ BPM / Playback / Playlist  ------------------ #
     def display_osc_addresses(self):
         self.log_message("------ OSC Addresses ------")
         self.log_message("Incoming OSC Addresses:")
-        incoming_addresses = {
-            "/pause": "Pause playback.",
-            "/play": "Resume playback.",
-            "/skip": "Skip to next track.",
-            "/back": "Restart current track.",
-            "/previous": "Return to previous track.",
-            "/bpm": "Set BPM via OSC.",
-            "/bpm1": "Toggle ignoring BPM sync.",
-            "/resetbpm": "Reset BPM to song's default.",
-            "/1 - /50": "Load specific song.",
-        }
-        for addr, desc in incoming_addresses.items():
-            self.log_message(f"  {addr}: {desc}")
-
+        for action, addr in self.osc_addresses_in.items():
+            self.log_message(f"  {action.capitalize()}: {addr}")
         self.log_message("Outgoing OSC Addresses:")
-        self.log_message("  /sync: Sent periodically with BPM value.")
-        self.log_message("  /chXnote, /chXnvalue, /chXnoteoff, /chXnoffvalue, /chXcc, /chXccvalue, /chXpitch, /chXpressure (X=1..16)")
+        for action, addr in self.osc_addresses_out.items():
+            self.log_message(f"  {action.capitalize()}: {addr}")
         self.log_message("------------------------------")
 
     def toggle_sync(self):
@@ -756,8 +896,8 @@ class OSCMIDIApp:
             if self.sync_stop_event.is_set() or not self.sync_var.get():
                 break
             if self.osc_client:
-                self.osc_client.send_message("/sync", current_bpm)
-                self.log_message(f"Sent /sync at BPM {current_bpm}")
+                self.osc_client.send_message(self.osc_addresses_out["sync"], current_bpm)
+                self.log_message(f"Sent {self.osc_addresses_out['sync']} at BPM {current_bpm}")
 
     def log_message(self, message: str):
         if len(self.log_messages) >= self.MAX_LOG_MESSAGES:
@@ -778,9 +918,9 @@ class OSCMIDIApp:
 
     def clear_log(self):
         self.log_messages.clear()
-        self.log_text.config(state="normal")
+        self.log_text.config(state='normal')
         self.log_text.delete("1.0", tk.END)
-        self.log_text.config(state="disabled")
+        self.log_text.config(state='disabled')
 
     def unload_playlist(self):
         if self.playing:
@@ -903,7 +1043,6 @@ class OSCMIDIApp:
                 self.sync_stop_event.set()
                 self.log_message("Sync BPM stopped.")
 
-            # Close OSC server
             if self.server_transport:
                 self.server_transport.close()
                 self.server_transport = None
@@ -984,7 +1123,6 @@ class OSCMIDIApp:
                 if not self.playing:
                     break
 
-                # Handling special events
                 if self.previous_event.is_set():
                     self.previous_event.clear()
                     self.current_index = max(0, self.current_index - 1)
@@ -1000,7 +1138,6 @@ class OSCMIDIApp:
                         self.skip_to_index = None
                     continue
 
-                # Loop or next
                 if self.looping and self.current_index == len(self.playlist) - 1:
                     if self.randomize and len(self.playlist) > 1:
                         random.shuffle(self.playlist)
@@ -1014,7 +1151,6 @@ class OSCMIDIApp:
                 self.playing = False
                 self.info_label.config(text="Playback finished.")
                 self.log_message("Playback finished.")
-                # Close OSC server after playback finishes
                 if self.server_transport:
                     self.server_transport.close()
                     self.server_transport = None
@@ -1048,9 +1184,7 @@ class OSCMIDIApp:
                 self.log_message("No BPM found in MIDI file; using existing BPM.")
 
         self.ticks_per_beat = midi_file.ticks_per_beat
-
         events = []
-        abs_ticks = 0
         for track in midi_file.tracks:
             abs_ticks = 0
             for msg in track:
@@ -1087,10 +1221,6 @@ class OSCMIDIApp:
             self.handle_midi_message(msg, source='playback')
 
     def handle_midi_message(self, message, source='input'):
-        """
-        Forward relevant MIDI -> OSC.
-        Split Control Change messages into /chXcc and /chXccvalue.
-        """
         if hasattr(message, 'channel'):
             ch = message.channel + 1
             if message.type in ('note_on', 'note_off'):
@@ -1099,48 +1229,47 @@ class OSCMIDIApp:
                 if source == 'playback':
                     if message.type == 'note_on' and velocity > 0:
                         if self.osc_client:
-                            self.osc_client.send_message(f"/ch{ch}note", note)
-                        self.log_message(f"Playback -> /ch{ch}note {note}")
-                    else:
-                        self.log_message(f"Playback -> Skipping note_off: {note}")
+                            osc_addr = self.osc_addresses_out["chXnote"].replace("X", str(ch))
+                            self.osc_client.send_message(osc_addr, note)
+                            self.log_message(f"Playback -> {osc_addr} {note}")
                 else:
                     if self.osc_client:
                         if message.type == 'note_on' and velocity > 0:
-                            self.osc_client.send_message(f"/ch{ch}note", note)
-                            self.osc_client.send_message(f"/ch{ch}nvalue", velocity)
+                            osc_addr_note = self.osc_addresses_out["chXnote"].replace("X", str(ch))
+                            osc_addr_nvalue = self.osc_addresses_out["chXnvalue"].replace("X", str(ch))
+                            self.osc_client.send_message(osc_addr_note, note)
+                            self.osc_client.send_message(osc_addr_nvalue, velocity)
+                            self.log_message(f"Input -> {osc_addr_note} {note}")
+                            self.log_message(f"Input -> {osc_addr_nvalue} {velocity}")
                         else:
-                            self.osc_client.send_message(f"/ch{ch}noteoff", note)
-                            self.osc_client.send_message(f"/ch{ch}noffvalue", 0)
-                    if message.type == 'note_on' and velocity > 0:
-                        self.log_message(f"Input -> /ch{ch}note {note}")
-                        self.log_message(f"Input -> /ch{ch}nvalue {velocity}")
-                    else:
-                        self.log_message(f"Input -> /ch{ch}noteoff {note}")
-                        self.log_message(f"Input -> /ch{ch}noffvalue 0")
+                            osc_addr_noteoff = self.osc_addresses_out["chXnoteoff"].replace("X", str(ch))
+                            osc_addr_noffvalue = self.osc_addresses_out["chXnoffvalue"].replace("X", str(ch))
+                            self.osc_client.send_message(osc_addr_noteoff, note)
+                            self.osc_client.send_message(osc_addr_noffvalue, 0)
+                            self.log_message(f"Input -> {osc_addr_noteoff} {note}")
+                            self.log_message(f"Input -> {osc_addr_noffvalue} 0")
             elif message.type == 'control_change':
                 cc_number = message.control
                 cc_value = message.value
                 if self.osc_client:
-                    # Send /chXcc with CC number (int 0-127)
-                    self.osc_client.send_message(f"/ch{ch}cc", cc_number)
-                    self.log_message(f"Input -> /ch{ch}cc {cc_number}")
+                    osc_addr_cc = self.osc_addresses_out["chXcc"].replace("X", str(ch))
+                    self.osc_client.send_message(osc_addr_cc, cc_number)
+                    self.log_message(f"Input -> {osc_addr_cc} {cc_number}")
 
-                    # Send /chXccvalue with CC value scaled to float 0-1
                     scaled_value = cc_value / 127.0
-                    self.osc_client.send_message(f"/ch{ch}ccvalue", float(scaled_value))
-                    self.log_message(f"Input -> /ch{ch}ccvalue {scaled_value:.3f}")
+                    osc_addr_ccvalue = self.osc_addresses_out["chXccvalue"].replace("X", str(ch))
+                    self.osc_client.send_message(osc_addr_ccvalue, float(scaled_value))
+                    self.log_message(f"Input -> {osc_addr_ccvalue} {scaled_value:.3f}")
             elif message.type == 'pitchwheel':
                 if self.osc_client:
-                    osc_address = f"/ch{ch}pitch"
+                    osc_address = self.osc_addresses_out["chXpitch"].replace("X", str(ch))
                     self.osc_client.send_message(osc_address, message.pitch)
-                if source == 'input':
-                    self.log_message(f"Input -> /ch{ch}pitch {message.pitch}")
+                    self.log_message(f"Input -> {osc_address} {message.pitch}")
             elif message.type == 'aftertouch':
                 if self.osc_client:
-                    osc_address = f"/ch{ch}pressure"
+                    osc_address = self.osc_addresses_out["chXpressure"].replace("X", str(ch))
                     self.osc_client.send_message(osc_address, message.value)
-                if source == 'input':
-                    self.log_message(f"Input -> /ch{ch}pressure {message.value}")
+                    self.log_message(f"Input -> {osc_address} {message.value}")
             else:
                 self.log_message(f"Ignored message type: {message.type}")
         else:
@@ -1171,10 +1300,6 @@ class OSCMIDIApp:
         return mido.get_output_names()
 
     def start(self):
-        """
-        Allows starting the OSC server without requiring a MIDI input.
-        If no MIDI selected, just warn user but proceed.
-        """
         if self.start_button['text'] == "Start Server":
             midi_input_port_name = self.midi_input_combo.get()
             midi_output_port_name = self.midi_out_combo.get()
@@ -1189,7 +1314,7 @@ class OSCMIDIApp:
 
             # Optional MIDI
             if not midi_input_port_name:
-                messagebox.showwarning("No MIDI In", "No MIDI input selected. MIDI features may be unavailable.")
+                messagebox.showwarning("No MIDI In", "No MIDI input selected. MIDI features may be limited.")
             else:
                 try:
                     midi_in = mido.open_input(midi_input_port_name)
@@ -1210,7 +1335,6 @@ class OSCMIDIApp:
             self.osc_client = udp_client.SimpleUDPClient(osc_out_ip, osc_out_port)
 
             # Start the asynchronous OSC server with the chosen port
-            # (We allow multiple processes to share via SO_REUSEPORT if the OS supports it.)
             self.osc_server_task = asyncio.run_coroutine_threadsafe(
                 self.start_osc_server_async(osc_in_port),
                 self.loop
@@ -1233,36 +1357,26 @@ class OSCMIDIApp:
             self.stop()
 
     async def start_osc_server_async(self, port):
-        """
-        Create and bind a shared socket manually with SO_REUSEPORT
-        (if supported by the OS). This allows multiple apps to receive
-        the same incoming OSC messages on the same port.
-        """
         disp = dispatcher.Dispatcher()
-        disp.map("/pause", self.handle_pause)
-        disp.map("/play", self.handle_play)
-        disp.map("/skip", self.handle_skip)
-        disp.map("/back", self.handle_back)
-        disp.map("/previous", self.handle_previous)
-        disp.map("/bpm", self.handle_bpm)
-        disp.map("/bpm1", self.handle_bpm1_toggle)
-        disp.map("/resetbpm", self.handle_resetbpm)
-
+        disp.map(self.osc_addresses_in["pause"], self.handle_pause)
+        disp.map(self.osc_addresses_in["play"], self.handle_play)
+        disp.map(self.osc_addresses_in["skip"], self.handle_skip)
+        disp.map(self.osc_addresses_in["back"], self.handle_back)
+        disp.map(self.osc_addresses_in["previous"], self.handle_previous)
+        disp.map(self.osc_addresses_in["bpm"], self.handle_bpm)
+        disp.map(self.osc_addresses_in["bpm1"], self.handle_bpm1_toggle)
+        disp.map(self.osc_addresses_in["resetbpm"], self.handle_resetbpm)
         for i in range(1, 51):
             disp.map(f"/{i}", self.handle_numeric_skip)
 
-        # Create a UDP socket ourselves to set SO_REUSEPORT
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # Allow re-bind if the OS supports it
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-            self.log_message("SO_REUSEPORT enabled (your OS must support it).")
+            self.log_message("SO_REUSEPORT enabled (if supported).")
         except AttributeError:
-            # SO_REUSEPORT might not be available on all systems
             self.log_message("SO_REUSEPORT not available on this platform.")
 
-        # 0.0.0.0 means all interfaces
         try:
             sock.bind(("0.0.0.0", port))
             self.log_message(f"OSC Server bound to port {port}.")
@@ -1275,10 +1389,10 @@ class OSCMIDIApp:
 
         self.log_message(f"Async OSC Server binding on port {port}...")
         server = osc_server.AsyncIOOSCUDPServer(
-            None,   # let python-osc skip its own bind
+            None,
             disp,
             self.loop,
-            sock=sock  # supply our shared socket
+            sock=sock
         )
         transport, protocol = await server.create_serve_endpoint()
         self.server_transport = transport
@@ -1290,14 +1404,13 @@ class OSCMIDIApp:
             color = 'red'
         self.master.after(0, lambda: self.connection_indicator.itemconfig(self.indicator, fill=color))
 
-    # ----------------- OSC Handlers ----------------- #
     def handle_previous(self, address, *args):
         self.previous()
 
     def handle_numeric_skip(self, address, *args):
-        match = re.match(r'^/(\d+)$', address)
-        if match:
-            num = int(match.group(1))
+        match_obj = re.match(r'^/(\d+)$', address)
+        if match_obj:
+            num = int(match_obj.group(1))
             self.skip_to_number(num)
         else:
             self.log_message(f"Unhandled numeric OSC address: {address}")
@@ -1306,7 +1419,7 @@ class OSCMIDIApp:
         current = self.ignore_bpm_var.get()
         new_val = not current
         self.ignore_bpm_var.set(new_val)
-        self.log_message(f"'/bpm1' toggled -> ignoring /bpm = {new_val}")
+        self.log_message(f"'{self.osc_addresses_in['bpm1']}' toggled -> ignoring /bpm = {new_val}")
 
     def handle_resetbpm(self, address, *args):
         if not self.playing:
@@ -1345,7 +1458,7 @@ class OSCMIDIApp:
 
     def handle_bpm(self, address, *args):
         if self.bpm_locked or self.ignore_bpm_var.get():
-            self.log_message("Got /bpm, but locked or ignored.")
+            self.log_message(f"Got {address}, but locked or ignored.")
             return
         now = time.time()
         self.bpm_tick_times.append(now)
@@ -1361,7 +1474,241 @@ class OSCMIDIApp:
             final_bpm = max(1, round(self.smoothed_bpm))
             self.user_bpm = final_bpm
             self.master.after(0, lambda: self.bpm_slider.set(final_bpm))
-            self.log_message(f"/bpm -> {final_bpm}")
+            self.log_message(f"{address} -> {final_bpm}")
+
+    def run_midi_loop(self, midi_in):
+        asyncio.set_event_loop(self.loop)
+        self.loop.create_task(self.midi_to_osc(midi_in))
+
+    async def midi_to_osc(self, midi_in):
+        while True:
+            for message in midi_in.iter_pending():
+                self.handle_midi_message(message, source='input')
+            await asyncio.sleep(0.01)
+
+    def quit_app(self):
+        try:
+            if self.midi_out:
+                self.midi_out.close()
+        except Exception as e:
+            print(f"Error closing MIDI out: {e}")
+        finally:
+            self.playing = False
+            self.pause_event.clear()
+            self.skip_event.set()
+            self.back_event.set()
+            self.previous_event.set()
+            self.skip_to_event.set()
+            self.sync_stop_event.set()
+            if self.sync_thread and self.sync_thread.is_alive():
+                self.sync_thread.join(timeout=1)
+            if self.server_transport:
+                self.server_transport.close()
+                self.server_transport = None
+                self.server_protocol = None
+                self.set_connection_status('red')
+                self.log_message("OSC Server stopped.")
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            if hasattr(self, 'loop_thread') and self.loop_thread and self.loop_thread.is_alive():
+                self.loop_thread.join(timeout=1)
+            self.master.quit()
+
+    # ----------------------- Toggling the 3 frames & auto-resize ------------------------------ #
+    def toggle_midi_menu(self):
+        # Hide other frames first
+        if self.alarm_frame_visible:
+            self.alarm_frame.pack_forget()
+            self.alarm_frame_visible = False
+            self.alarm_menu_button.config(text="≡ Alarm Clock")
+
+        if self.cc_frame_visible:
+            self.cc_frame.pack_forget()
+            self.cc_frame_visible = False
+            self.cc_menu_button.config(text="≡ CC")
+
+        # Toggle this one
+        if self.content_visible:
+            self.content_frame.pack_forget()
+            self.content_visible = False
+            self.menu_button.config(text="≡ Midi Player/Log")
+            self.log_message("MIDI Player/Log UI hidden.")
+        else:
+            self.content_frame.pack(fill=tk.BOTH, expand=True)
+            self.content_visible = True
+            self.menu_button.config(text="≡ Hide Midi Player/Log")
+            self.log_message("MIDI Player/Log UI shown.")
+
+        self.master.update_idletasks()
+        self.master.geometry("")
+
+    def toggle_alarm_menu(self):
+        if self.content_visible:
+            self.content_frame.pack_forget()
+            self.content_visible = False
+            self.menu_button.config(text="≡ Midi Player/Log")
+
+        if self.cc_frame_visible:
+            self.cc_frame.pack_forget()
+            self.cc_frame_visible = False
+            self.cc_menu_button.config(text="≡ CC")
+
+        if self.alarm_frame_visible:
+            self.alarm_frame.pack_forget()
+            self.alarm_frame_visible = False
+            self.alarm_menu_button.config(text="≡ Alarm Clock")
+            self.log_message("Alarm Clock UI hidden.")
+        else:
+            self.alarm_frame.pack(fill=tk.BOTH, expand=True)
+            self.alarm_frame_visible = True
+            self.alarm_menu_button.config(text="≡ Hide Alarm Clock")
+            self.log_message("Alarm Clock UI shown.")
+
+        self.master.update_idletasks()
+        self.master.geometry("")
+
+    def toggle_cc_menu(self):
+        if self.content_visible:
+            self.content_frame.pack_forget()
+            self.content_visible = False
+            self.menu_button.config(text="≡ Midi Player/Log")
+
+        if self.alarm_frame_visible:
+            self.alarm_frame.pack_forget()
+            self.alarm_frame_visible = False
+            self.alarm_menu_button.config(text="≡ Alarm Clock")
+
+        if self.cc_frame_visible:
+            self.cc_frame.pack_forget()
+            self.cc_frame_visible = False
+            self.cc_menu_button.config(text="≡ CC")
+            self.log_message("CC UI hidden.")
+        else:
+            self.cc_frame.pack(fill=tk.BOTH, expand=True)
+            self.cc_frame_visible = True
+            self.cc_menu_button.config(text="≡ Hide CC")
+            self.log_message("CC UI shown.")
+
+        self.master.update_idletasks()
+        self.master.geometry("")
+
+    # -------------------- CC Controls -------------------- #
+    def send_cc_message(self, idx):
+        """
+        Sends an OSC message based on the slider value and its corresponding OSC address.
+        """
+        osc_address = self.cc_address_entries[idx].get().strip()
+        value = self.cc_sliders[idx].get()
+
+        if not osc_address.startswith("/"):
+            self.log_message(f"Invalid OSC address for CC #{idx+1}: {osc_address}")
+            messagebox.showerror("Invalid OSC Address", f"OSC address for CC #{idx+1} must start with '/'.")
+            return
+
+        if self.osc_client:
+            try:
+                self.osc_client.send_message(osc_address, value)
+                self.log_message(f"Sent OSC to {osc_address} with value {value}")
+            except Exception as e:
+                self.log_message(f"Failed to send OSC message to {osc_address}: {e}")
+        else:
+            self.log_message("OSC Client not connected. Cannot send CC message.")
+
+    def send_cc_toggle(self, idx):
+        """
+        Sends an OSC message based on the toggle state and its corresponding OSC address.
+        """
+        osc_address = self.cc_address_entries[idx].get().strip()
+        state = 1 if self.cc_toggles[idx].get() else 0
+
+        if not osc_address.startswith("/"):
+            self.log_message(f"Invalid OSC address for CC Toggle #{idx+1}: {osc_address}")
+            messagebox.showerror("Invalid OSC Address", f"OSC address for CC Toggle #{idx+1} must start with '/'.")
+            return
+
+        if self.osc_client:
+            try:
+                self.osc_client.send_message(osc_address, state)
+                self.log_message(f"Sent OSC to {osc_address} with state {state}")
+            except Exception as e:
+                self.log_message(f"Failed to send OSC message to {osc_address}: {e}")
+        else:
+            self.log_message("OSC Client not connected. Cannot send CC Toggle message.")
+
+    # ------------------ OSC Handlers ----------------- #
+    def handle_previous(self, address, *args):
+        self.previous()
+
+    def handle_numeric_skip(self, address, *args):
+        match_obj = re.match(r'^/(\d+)$', address)
+        if match_obj:
+            num = int(match_obj.group(1))
+            self.skip_to_number(num)
+        else:
+            self.log_message(f"Unhandled numeric OSC address: {address}")
+
+    def handle_bpm1_toggle(self, address, *args):
+        current = self.ignore_bpm_var.get()
+        new_val = not current
+        self.ignore_bpm_var.set(new_val)
+        self.log_message(f"'{self.osc_addresses_in['bpm1']}' toggled -> ignoring /bpm = {new_val}")
+
+    def handle_resetbpm(self, address, *args):
+        if not self.playing:
+            self.log_message("Received /resetbpm but playback not running.")
+            return
+        self.user_bpm = max(1, round(self.default_bpm))
+        self.smoothed_bpm = float(self.user_bpm)
+        self.bpm_slider.set(self.user_bpm)
+        self.log_message("BPM reset via /resetbpm to current MIDI's default.")
+
+    def handle_pause(self, address, *args):
+        if self.playing and not self.pause_event.is_set():
+            self.pause_event.set()
+            self.info_label.config(text="Playback paused.")
+            self.log_message("Playback paused (OSC).")
+
+    def handle_play(self, address, *args):
+        if self.playing and self.pause_event.is_set():
+            self.pause_event.clear()
+            self.info_label.config(text="Playback resumed.")
+            self.log_message("Playback resumed (OSC).")
+
+    def handle_skip(self, address, *args):
+        if self.playing:
+            self.skip_event.set()
+            self.log_message("Skip requested (OSC).")
+        else:
+            self.log_message("Skip but no playback active.")
+
+    def handle_back(self, address, *args):
+        if self.playing:
+            self.back_event.set()
+            self.log_message("Back requested (OSC).")
+        else:
+            self.log_message("Back but no playback active.")
+
+    def handle_bpm(self, address, *args):
+        if self.bpm_locked or self.ignore_bpm_var.get():
+            self.log_message(f"Got {address}, but locked or ignored.")
+            return
+        now = time.time()
+        self.bpm_tick_times.append(now)
+        if len(self.bpm_tick_times) > 4:
+            self.bpm_tick_times.pop(0)
+        if len(self.bpm_tick_times) == 4:
+            intervals = []
+            for i in range(3):
+                intervals.append(self.bpm_tick_times[i+1] - self.bpm_tick_times[i])
+            avg_interval = sum(intervals) / len(intervals)
+            new_bpm = 60.0 / avg_interval
+            self.smoothed_bpm = self.alpha * new_bpm + (1 - self.alpha) * self.smoothed_bpm
+            final_bpm = max(1, round(self.smoothed_bpm))
+            self.user_bpm = final_bpm
+            self.master.after(0, lambda: self.bpm_slider.set(final_bpm))
+            self.log_message(f"{address} -> {final_bpm}")
+
+    # ----------------- CC Controls ----------------- #
+    # These methods are already integrated above with send_cc_message and send_cc_toggle
 
     # ----------------- MIDI to OSC ----------------- #
     def run_midi_loop(self, midi_in):
@@ -1391,7 +1738,6 @@ class OSCMIDIApp:
             self.sync_stop_event.set()
             if self.sync_thread and self.sync_thread.is_alive():
                 self.sync_thread.join(timeout=1)
-            # Close OSC server
             if self.server_transport:
                 self.server_transport.close()
                 self.server_transport = None
@@ -1399,14 +1745,98 @@ class OSCMIDIApp:
                 self.set_connection_status('red')
                 self.log_message("OSC Server stopped.")
             self.loop.call_soon_threadsafe(self.loop.stop)
-            if self.loop_thread and self.loop_thread.is_alive():
+            if hasattr(self, 'loop_thread') and self.loop_thread and self.loop_thread.is_alive():
                 self.loop_thread.join(timeout=1)
             self.master.quit()
 
+    # ----------------------- Toggling the 3 frames & auto-resize ------------------------------ #
+    def toggle_midi_menu(self):
+        # Hide other frames first
+        if self.alarm_frame_visible:
+            self.alarm_frame.pack_forget()
+            self.alarm_frame_visible = False
+            self.alarm_menu_button.config(text="≡ Alarm Clock")
+
+        if self.cc_frame_visible:
+            self.cc_frame.pack_forget()
+            self.cc_frame_visible = False
+            self.cc_menu_button.config(text="≡ CC")
+
+        # Toggle this one
+        if self.content_visible:
+            self.content_frame.pack_forget()
+            self.content_visible = False
+            self.menu_button.config(text="≡ Midi Player/Log")
+            self.log_message("MIDI Player/Log UI hidden.")
+        else:
+            self.content_frame.pack(fill=tk.BOTH, expand=True)
+            self.content_visible = True
+            self.menu_button.config(text="≡ Hide Midi Player/Log")
+            self.log_message("MIDI Player/Log UI shown.")
+
+        self.master.update_idletasks()
+        self.master.geometry("")
+
+    def toggle_alarm_menu(self):
+        if self.content_visible:
+            self.content_frame.pack_forget()
+            self.content_visible = False
+            self.menu_button.config(text="≡ Midi Player/Log")
+
+        if self.cc_frame_visible:
+            self.cc_frame.pack_forget()
+            self.cc_frame_visible = False
+            self.cc_menu_button.config(text="≡ CC")
+
+        if self.alarm_frame_visible:
+            self.alarm_frame.pack_forget()
+            self.alarm_frame_visible = False
+            self.alarm_menu_button.config(text="≡ Alarm Clock")
+            self.log_message("Alarm Clock UI hidden.")
+        else:
+            self.alarm_frame.pack(fill=tk.BOTH, expand=True)
+            self.alarm_frame_visible = True
+            self.alarm_menu_button.config(text="≡ Hide Alarm Clock")
+            self.log_message("Alarm Clock UI shown.")
+
+        self.master.update_idletasks()
+        self.master.geometry("")
+
+    def toggle_cc_menu(self):
+        if self.content_visible:
+            self.content_frame.pack_forget()
+            self.content_visible = False
+            self.menu_button.config(text="≡ Midi Player/Log")
+
+        if self.alarm_frame_visible:
+            self.alarm_frame.pack_forget()
+            self.alarm_frame_visible = False
+            self.alarm_menu_button.config(text="≡ Alarm Clock")
+
+        if self.cc_frame_visible:
+            self.cc_frame.pack_forget()
+            self.cc_frame_visible = False
+            self.cc_menu_button.config(text="≡ CC")
+            self.log_message("CC UI hidden.")
+        else:
+            self.cc_frame.pack(fill=tk.BOTH, expand=True)
+            self.cc_frame_visible = True
+            self.cc_menu_button.config(text="≡ Hide CC")
+            self.log_message("CC UI shown.")
+
+        self.master.update_idletasks()
+        self.master.geometry("")
+
+    # ----------------------- CC Controls Integration ------------------------------ #
+
+    # The send_cc_message and send_cc_toggle methods are already integrated above in setup_cc_ui
+    # They are bound to the sliders and toggles respectively
+
     # ----------------------- Main Execution ------------------------------ #
+
+# Create an instance of OSCMIDIApp and run the application
 if __name__ == "__main__":
     root = tk.Tk()
-    root.geometry("210x210")  # Start with a small window size
+    root.geometry("500x350")  # Initial size
     app = OSCMIDIApp(root)
-    root.protocol("WM_DELETE_WINDOW", app.quit_app)
     root.mainloop()
